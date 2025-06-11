@@ -1,0 +1,9 @@
+---
+- name: Run System Resource Check
+  hosts: all
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Execute the resource check script
+      ansible.builtin.script: check_resources.sh
