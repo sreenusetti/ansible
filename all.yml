@@ -1,0 +1,69 @@
+---
+- name: Check System Resources and Log Status
+  hosts: all
+  gather_facts: false
+
+  vars:
+    # Define your thresholds here for easy modification
+    ram_threshold: 60.0
+    # The central log file path on the AWX controller pod
+    log_file_path: "/var/log/awx/output.log"
+
+  tasks:
+    - name: 1. Gather hardware facts from all hosts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "hardware"
+          - "network"
+
+    # ===================================================================
+    # ==  PROCESS FACTS AND CALCULATE USAGE FOR EACH OS FAMILY
+    # ===================================================================
+    - name: 2. Process facts and determine status
+      block:
+        # --- RHEL / Linux Block ---
+        - name: Process RHEL facts
+          when: ansible_os_family == "RedHat"
+          ansible.builtin.set_fact:
+            total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
+            free_ram_mb: "{{ ansible_facts.memfree_mb }}"
+            used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
+            ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+
+        # --- Windows Block ---
+        - name: Process Windows facts
+          when: ansible_os_family == "Windows"
+          ansible.builtin.set_fact:
+            total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
+            free_ram_mb: "{{ ansible_facts.memfree_mb }}"
+            used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
+            ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+
+        # --- Set a universal status based on the calculated percentage ---
+        - name: Set RAM status based on threshold
+          ansible.builtin.set_fact:
+            ram_status: "{{ 'Critical' if ram_usage_percent | float > ram_threshold | float else 'Good' }}"
+
+        # --- Pre-format the log message for cleanliness ---
+        - name: Format the log message
+          ansible.builtin.set_fact:
+            log_message: "[{{ ansible_facts.date_time.iso8601 }}] HOST={{ inventory_hostname }} OS={{ ansible_os_family }} STATUS={{ ram_status }} RAM_USAGE={{ ram_usage_percent }}%"
+
+    # ===================================================================
+    # ==  OUTPUT AND LOGGING
+    # ===================================================================
+    - name: 3. Display the result in AWX job output
+      ansible.builtin.debug:
+        msg: "{{ log_message }}"
+
+    - name: 4. Append result to the central log file on the controller
+      ansible.builtin.lineinfile:
+        path: "{{ log_file_path }}"
+        line: "{{ log_message }}"
+        create: true
+        mode: "0644"
+      # This is the key part for central logging:
+      delegate_to: localhost
+      # We need root privileges on the AWX pod to write to /var/log/awx
+      become: true
