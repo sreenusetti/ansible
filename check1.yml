@@ -1,6 +1,6 @@
 ---
 - name: Run System Resource Check
-  hosts: localhost
+  hosts: DR-netTest
   become: false
   gather_facts: false
 
