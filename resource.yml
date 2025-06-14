@@ -1,0 +1,42 @@
+---
+- name: Gather and Display System Information
+  hosts: all
+  # gather_facts is true by default, but we'll state it for clarity.
+  gather_facts: true
+
+  tasks:
+    - name: Display All Gathered Facts (for debugging)
+      ansible.builtin.debug:
+        var: ansible_facts
+      # We add a verbosity of 1 so this task only runs when you use -v
+      # This prevents a huge wall of text on every run.
+      verbosity: 1
+
+    - name: Display Key System Resources
+      ansible.builtin.debug:
+        msg:
+          - "============================================="
+          - " HOSTNAME: {{ ansible_facts.hostname }}"
+          - " OS: {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} ({{ ansible_facts.os_family }})"
+          - " ARCHITECTURE: {{ ansible_facts.architecture }}"
+          - " KERNEL: {{ ansible_facts.kernel }} (for Linux)"
+          - ""
+          - "--- CPU ---"
+          - " Sockets: {{ ansible_facts.processor_vcpus | default('N/A') }}"
+          - " Cores: {{ ansible_facts.processor_cores | default('N/A') }}"
+          - " Threads: {{ ansible_facts.processor_count | default('N/A') }}"
+          - " Model: {{ ansible_facts.processor[1] | default(ansible_facts.processor[0]) | default('N/A') }} (Linux/Windows)"
+          - ""
+          - "--- MEMORY ---"
+          - " Total RAM: {{ ansible_facts.memtotal_mb }} MB"
+          - " Free RAM: {{ ansible_facts.memfree_mb }} MB"
+          - " Total Swap: {{ ansible_facts.swaptotal_mb }} MB"
+          - " Free Swap: {{ ansible_facts.swapfree_mb }} MB"
+          - ""
+          - "--- NETWORK ---"
+          - " Default IPv4: {{ ansible_facts.default_ipv4.address | default('N/A') }}"
+          - " MAC Address: {{ ansible_facts.default_ipv4.macaddress | default('N/A') }}"
+          - ""
+          - "--- DISK SPACE ---"
+          - "{{ ansible_facts.mounts }}"
+          - "============================================="
