@@ -1,48 +1,34 @@
 ---
-- name: Gather and Display System Information
-  hosts: all
-  # gather_facts is true by default, but we'll state it for clarity.
-  gather_facts: true
+# file: gather_sysinfo.yml
+- name: Collect CPU and RAM information from localhost
+  hosts: localhost
+  connection: local          # run tasks on the controller itself
+  gather_facts: false        # we'll gather only the facts we need
 
   tasks:
-    # This first task is for deep debugging. It will only run if you
-    # launch the job from AWX with a verbosity level of 1 or higher.
-    # It prints ALL the facts, which is a lot of text.
-    - name: Display All Gathered Facts (for debugging)
-      ansible.builtin.debug:
-        var: ansible_facts
-      # CORRECTED: `verbosity` is a task-level keyword, not a module parameter.
-      # It must be at the same indentation level as `name` and `ansible.builtin.debug`.
-      verbosity: 1
+    - name: Gather hardware-related facts (CPU, RAM, disks, etc.)
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+      register: hw_facts
 
-    # This second task runs every time and provides a clean, readable summary.
-    - name: Display Key System Resources
+    - name: Display the key facts in the job output
       ansible.builtin.debug:
         msg:
-          - "============================================="
-          - " HOSTNAME:         {{ ansible_facts.hostname | default('N/A') }}"
-          - " OS:               {{ ansible_facts.distribution | default(ansible_facts.os_family) }} {{ ansible_facts.distribution_version | default('') }}"
-          - " ARCHITECTURE:     {{ ansible_facts.architecture | default('N/A') }}"
-          - " KERNEL/OS Version:{{ ansible_facts.kernel | default(ansible_facts.os_version) | default('N/A') }}"
-          - ""
-          - "--- CPU ---"
-          - " Sockets:          {{ ansible_facts.processor_vcpus | default('N/A') }}"
-          - " Cores per Socket: {{ ansible_facts.processor_cores | default('N/A') }}"
-          - " Threads per Core: {{ ansible_facts.processor_threads_per_core | default('N/A') }}"
-          - " Total Threads:    {{ ansible_facts.processor_count | default('N/A') }}"
-          - " Model:            {{ ansible_facts.processor[1] | default(ansible_facts.processor[0]) | default('N/A') }}"
-          - ""
-          - "--- MEMORY ---"
-          - " Total RAM:        {{ ansible_facts.memtotal_mb }} MB"
-          - " Free RAM:         {{ ansible_facts.memfree_mb }} MB"
-          - " Total Swap:       {{ ansible_facts.swaptotal_mb }} MB"
-          - " Free Swap:        {{ ansible_facts.swapfree_mb }} MB"
-          - ""
-          - "--- NETWORK ---"
-          - " Default IPv4:     {{ ansible_facts.default_ipv4.address | default('N/A') }}"
-          - " MAC Address:      {{ ansible_facts.default_ipv4.macaddress | default('N/A') }}"
-          - " All IPs:          {{ ansible_facts.all_ipv4_addresses }}"
-          - ""
-          - "--- DISK SPACE ---"
-          - "{{ ansible_facts.mounts }}"
-          - "============================================="
+          cpu_model: "{{ ansible_facts['processor'][1] | default(ansible_facts['processor'][0]) }}"
+          cpu_socket_count: "{{ ansible_facts['processor_count'] }}"
+          cpu_core_count: "{{ ansible_facts['processor_cores'] }}"
+          ram_total_mb: "{{ ansible_facts['memtotal_mb'] }}"
+          ram_free_mb: "{{ ansible_facts['memfree_mb'] }}"
+
+    - name: Save the same information to /tmp
+      ansible.builtin.copy:
+        dest: "/tmp/system_info_{{ inventory_hostname }}.txt"
+        mode: "0644"
+        content: |
+          Hostname      : {{ inventory_hostname }}
+          CPU model     : {{ ansible_facts['processor'][1] | default(ansible_facts['processor'][0]) }}
+          CPU sockets   : {{ ansible_facts['processor_count'] }}
+          CPU cores     : {{ ansible_facts['processor_cores'] }}
+          RAM total (MB): {{ ansible_facts['memtotal_mb'] }}
+          RAM free  (MB): {{ ansible_facts['memfree_mb'] }}
