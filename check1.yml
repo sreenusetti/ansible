@@ -1,7 +1,7 @@
 ---
 - name: Run System Resource Check
-  hosts: DR-netTest
-  become: false
+  hosts: ALL
+  become: true
   gather_facts: false
 
   tasks:
