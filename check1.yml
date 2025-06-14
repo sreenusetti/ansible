@@ -1,6 +1,6 @@
 ---
 - name: Run System Resource Check
-  hosts: ALL
+  hosts: all
   become: true
   gather_facts: false
 
