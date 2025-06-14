@@ -5,37 +5,43 @@
   gather_facts: true
 
   tasks:
+    # This first task is for deep debugging. It will only run if you
+    # launch the job from AWX with a verbosity level of 1 or higher.
+    # It prints ALL the facts, which is a lot of text.
     - name: Display All Gathered Facts (for debugging)
       ansible.builtin.debug:
         var: ansible_facts
-      # We add a verbosity of 1 so this task only runs when you use -v
-      # This prevents a huge wall of text on every run.
+      # CORRECTED: `verbosity` is a task-level keyword, not a module parameter.
+      # It must be at the same indentation level as `name` and `ansible.builtin.debug`.
       verbosity: 1
 
+    # This second task runs every time and provides a clean, readable summary.
     - name: Display Key System Resources
       ansible.builtin.debug:
         msg:
           - "============================================="
-          - " HOSTNAME: {{ ansible_facts.hostname }}"
-          - " OS: {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} ({{ ansible_facts.os_family }})"
-          - " ARCHITECTURE: {{ ansible_facts.architecture }}"
-          - " KERNEL: {{ ansible_facts.kernel }} (for Linux)"
+          - " HOSTNAME:         {{ ansible_facts.hostname | default('N/A') }}"
+          - " OS:               {{ ansible_facts.distribution | default(ansible_facts.os_family) }} {{ ansible_facts.distribution_version | default('') }}"
+          - " ARCHITECTURE:     {{ ansible_facts.architecture | default('N/A') }}"
+          - " KERNEL/OS Version:{{ ansible_facts.kernel | default(ansible_facts.os_version) | default('N/A') }}"
           - ""
           - "--- CPU ---"
-          - " Sockets: {{ ansible_facts.processor_vcpus | default('N/A') }}"
-          - " Cores: {{ ansible_facts.processor_cores | default('N/A') }}"
-          - " Threads: {{ ansible_facts.processor_count | default('N/A') }}"
-          - " Model: {{ ansible_facts.processor[1] | default(ansible_facts.processor[0]) | default('N/A') }} (Linux/Windows)"
+          - " Sockets:          {{ ansible_facts.processor_vcpus | default('N/A') }}"
+          - " Cores per Socket: {{ ansible_facts.processor_cores | default('N/A') }}"
+          - " Threads per Core: {{ ansible_facts.processor_threads_per_core | default('N/A') }}"
+          - " Total Threads:    {{ ansible_facts.processor_count | default('N/A') }}"
+          - " Model:            {{ ansible_facts.processor[1] | default(ansible_facts.processor[0]) | default('N/A') }}"
           - ""
           - "--- MEMORY ---"
-          - " Total RAM: {{ ansible_facts.memtotal_mb }} MB"
-          - " Free RAM: {{ ansible_facts.memfree_mb }} MB"
-          - " Total Swap: {{ ansible_facts.swaptotal_mb }} MB"
-          - " Free Swap: {{ ansible_facts.swapfree_mb }} MB"
+          - " Total RAM:        {{ ansible_facts.memtotal_mb }} MB"
+          - " Free RAM:         {{ ansible_facts.memfree_mb }} MB"
+          - " Total Swap:       {{ ansible_facts.swaptotal_mb }} MB"
+          - " Free Swap:        {{ ansible_facts.swapfree_mb }} MB"
           - ""
           - "--- NETWORK ---"
-          - " Default IPv4: {{ ansible_facts.default_ipv4.address | default('N/A') }}"
-          - " MAC Address: {{ ansible_facts.default_ipv4.macaddress | default('N/A') }}"
+          - " Default IPv4:     {{ ansible_facts.default_ipv4.address | default('N/A') }}"
+          - " MAC Address:      {{ ansible_facts.default_ipv4.macaddress | default('N/A') }}"
+          - " All IPs:          {{ ansible_facts.all_ipv4_addresses }}"
           - ""
           - "--- DISK SPACE ---"
           - "{{ ansible_facts.mounts }}"
