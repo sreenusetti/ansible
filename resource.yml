@@ -1,7 +1,7 @@
 ---
 # file: gather_sysinfo.yml
 - name: Collect CPU and RAM information from localhost
-  hosts: localhost
+  hosts: all
   connection: local          # run tasks on the controller itself
   gather_facts: false        # we'll gather only the facts we need
 
