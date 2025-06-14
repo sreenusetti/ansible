@@ -1,0 +1,8 @@
+---
+- name: A simple test playbook
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Print a message
+      ansible.builtin.debug:
+        msg: "Hello from my first playbook in AWX!"
