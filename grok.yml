@@ -1,0 +1,183 @@
+---
+- name: Precheck Connectivity
+  hosts: all
+  gather_facts: false
+  ignore_unreachable: true
+  collections:
+    - ansible.windows
+
+  tasks:
+    - name: 0.1 Check WinRM Python module (localhost)
+      ansible.builtin.command: python3 -c "import winrm"
+      delegate_to: localhost
+      register: winrm_check
+      ignore_errors: true
+      changed_when: false
+      when: ansible_connection == 'winrm'
+
+    - name: 0.2 Fail if WinRM module is missing
+      ansible.builtin.fail:
+        msg: "Python module 'winrm' is not installed on the AWX server. Install it using 'pip install pywinrm'."
+      when: ansible_connection == 'winrm' and winrm_check.rc != 0
+
+    - name: 0.3 Log connection settings
+      ansible.builtin.debug:
+        msg: >-
+          Connection settings for {{ inventory_hostname }}: 
+          ansible_connection={{ ansible_connection | default('unknown') }}, 
+          ansible_user={{ ansible_user | default('unknown') }}, 
+          ansible_remote_tmp={{ ansible_remote_tmp | default('unknown') }}
+      when: ansible.builtin.debug is defined
+
+    - name: 0.4 Ensure temporary directory exists (Linux)
+      ansible.builtin.file:
+        path: "{{ ansible_remote_tmp | default('/tmp/.ansible/tmp') }}"
+        state: directory
+        mode: '0700'
+      become: true
+      when: ansible_connection == 'ssh'
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: 0.5 Ensure temporary directory exists (Windows)
+      ansible.windows.win_file:
+        path: "{{ ansible_remote_tmp | default('C:\\Temp\\ansible') }}"
+        state: directory
+      when: ansible_connection == 'winrm'
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: 0.6 Ping the host to verify connectivity
+      ansible.builtin.ping:
+      register: ping_result
+      ignore_unreachable: true
+      when: ansible_connection == 'ssh'
+
+    - name: 0.7 Ping Windows host via WinRM
+      ansible.windows.win_ping:
+      register: win_ping_result
+      ignore_unreachable: true
+      when: ansible_connection == 'winrm'
+
+    - name: 0.8 Log connectivity status
+      ansible.builtin.debug:
+        msg: >-
+          Connectivity to {{ inventory_hostname }}: 
+          {{ 'Success' if (ansible_connection == 'ssh' and ping_result is success) or (ansible_connection == 'winrm' and win_ping_result is success) 
+             else 'Failed - ' + (ping_result.msg | default(win_ping_result.msg | default('Unreachable'))) }}
+      when: ansible.builtin.debug is defined
+
+- name: Check System Resources and Log Status
+  hosts: all
+  gather_facts: false
+  ignore_unreachable: true
+  collections:
+    - ansible.windows
+
+  vars:
+    ram_threshold: "{{ ram_threshold | default(60.0) | float }}"
+    cpu_threshold: "{{ cpu_threshold | default(80.0) | float }}"
+    log_path_map:
+      RedHat: "{{ log_file_path | default('/var/log/system_health.log') }}"
+      Debian: "{{ log_file_path | default('/var/log/system_health.log') }}"
+      Ubuntu: "{{ log_file_path | default('/var/log/system_health.log') }}"
+      Windows: "{{ log_file_path | default('C:\\Temp\\system_health.log') }}"
+    metrics_map:
+      linux_base_metrics: &linux_metrics
+        cpu_load_raw: "{{ (ansible_facts.loadavg[0] | default(0.0)) | float }}"
+        cpu_cores: "{{ ((ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1)) | int) * (ansible_facts.processor_count | default(1)) | int)) | int }}"
+      RedHat: *linux_metrics
+      Debian: *linux_metrics
+      Ubuntu: *linux_metrics
+      Windows:
+        cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0.0)) | float }}"
+        cpu_cores: "{{ 1 | int }}"
+    ansible_remote_tmp: "{{ 'C:\\Temp\\ansible' if ansible_connection == 'winrm' else '/tmp/.ansible/tmp' }}"
+
+  tasks:
+    - name: 1. Gather minimal and hardware facts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "os_family"
+          - "date_time"
+          - "hardware"
+          - "loadavg"
+      register: fact_setup
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: 2. Skip if host is unreachable
+      ansible.builtin.fail:
+        msg: "Host {{ inventory_hostname }} is unreachable, skipping further tasks."
+      when: fact_setup is unreachable
+      failed_when: true
+      ignore_unreachable: true
+
+    - name: 3. Fail if OS is unsupported
+      ansible.builtin.fail:
+        msg: "Unsupported OS family: {{ ansible_facts.os_family | default('Unknown') }}. Supported OS families: {{ metrics_map.keys() | join(', ') }}"
+      when: ansible_facts.os_family | default('Unknown') not in metrics_map
+      failed_when: true
+
+    - name: 4. Calculate and Format Health Metrics
+      block:
+        - name: 4a. Set OS-specific metric variables from map
+          ansible.builtin.set_fact:
+            os_metrics: "{{ metrics_map[ansible_facts.os_family] }}"
+          when: ansible_facts.os_family in metrics_map
+
+        - name: 4b. Perform common RAM and CPU calculations
+          ansible.builtin.set_fact:
+            used_ram_mb: "{{ (ansible_facts.memtotal_mb | default(0) | int) - (ansible_facts.memfree_mb | default(0) | int) }}"
+            ram_usage_percent: "{{ (((ansible_facts.memtotal_mb | int - ansible_facts.memfree_mb | int) / ansible_facts.memtotal_mb | float) * 100) | round(2) }}"
+            cpu_load_percent: "{{ ((os_metrics.cpu_load_raw | float / os_metrics.cpu_cores | int) * 100) | round(2) if (os_metrics.cpu_cores | int) > 0 else 0.0 }}"
+            ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
+            cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
+          when: ansible_facts.memtotal_mb is defined
+
+        - name: 4c. Format success log message
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 | default('unknown') }}]
+              HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family }}
+              RAM_USAGE={{ ram_usage_percent | default(0.0) }}% ({{ ram_status | default('Unknown') }})
+              CPU_USAGE={{ cpu_load_percent | default(0.0) }}% ({{ cpu_status | default('Unknown') }})
+      rescue:
+        - name: 4d. Format error log message
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 | default('unknown') }}]
+              HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family | default('Unknown') }}
+              STATUS=Error
+              MESSAGE="Failed to gather or calculate system metrics. OS may be unsupported or facts unavailable."
+
+    - name: 5. Show result in AWX output
+      ansible.builtin.debug:
+        msg: "{{ log_message }}"
+      when: ansible.builtin.debug is defined
+
+    - name: 6. Ensure log directory exists on target host (Linux)
+      ansible.builtin.file:
+        path: "{{ log_path_map[ansible_facts.os_family] | dirname }}"
+        state: directory
+        mode: '0755'
+      become: true
+      when: ansible_facts.os_family in log_path_map and ansible_facts.os_family != 'Windows'
+
+    - name: 7. Ensure log directory exists on target host (Windows)
+      ansible.windows.win_file:
+        path: "{{ log_path_map[ansible_facts.os_family] | dirname }}"
+        state: directory
+      when: ansible_facts.os_family == 'Windows'
+
+    - name: 8. Append result to local log file on target host
+      ansible.builtin.lineinfile:
+        path: "{{ log_path_map[ansible_facts.os_family] }}"
+        line: "{{ log_message }}"
+        create: true
+        mode: "0644"
+      become: true
+      when: ansible_facts.os_family in log_path_map
