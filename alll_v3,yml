@@ -46,6 +46,10 @@
                   (os_metrics.cpu_cores | float)) * 100 | round(2) if (os_metrics.cpu_cores | float) > 0 else 0 }}
             ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
             cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 }}] HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family }} RAM_USAGE={{ ram_usage_percent | default(0) }}% ({{ ram_status }})
+              CPU_USAGE={{ cpu_load_percent | default(0) }}% ({{ cpu_status }})
       rescue:
         - name: 3e. Format error log message
           ansible.builtin.set_fact:
@@ -55,34 +59,12 @@
 
     - name: 4. Show result in AWX output
       ansible.builtin.debug:
-        msg: >-
-          {{ log_message | default(
-            "[%s] HOST=%s OS=%s RAM_USAGE=%.2f%% (%s) CPU_USAGE=%.2f%% (%s)" | format(
-              ansible_facts.date_time.iso8601,
-              inventory_hostname,
-              ansible_facts.os_family,
-              ram_usage_percent | default(0),
-              ram_status | default('Unknown'),
-              cpu_load_percent | default(0),
-              cpu_status | default('Unknown')
-            )
-          ) }}
+        msg: "{{ log_message }}"
 
     - name: 5. Append result to central log file
       ansible.builtin.lineinfile:
         path: "{{ log_file_path }}"
-        line: >-
-          {{ log_message | default(
-            "[%s] HOST=%s OS=%s RAM_USAGE=%.2f%% (%s) CPU_USAGE=%.2f%% (%s)" | format(
-              ansible_facts.date_time.iso8601,
-              inventory_hostname,
-              ansible_facts.os_family,
-              ram_usage_percent | default(0),
-              ram_status | default('Unknown'),
-              cpu_load_percent | default(0),
-              cpu_status | default('Unknown')
-            )
-          ) }}
+        line: "{{ log_message }}"
         create: true
         mode: "0644"
       delegate_to: localhost
