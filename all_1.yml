@@ -22,46 +22,37 @@
 
   tasks:
 
-    - name: 1. Gather only OS and time info first
+    - name: 1. Gather only OS and datetime info first
       ansible.builtin.setup:
         gather_subset:
-          - "os_family"
-          - "date_time"
+          - os_family
+          - date_time
 
     # ===================================================================
-    # == LINUX SECTION
+    # == LINUX BLOCK
     # ===================================================================
     - name: 2a. Gather full facts for Linux
       when: ansible_os_family in ["RedHat", "Debian"]
       ansible.builtin.setup:
         gather_subset:
-          - "hardware"
-          - "virtual"
-          - "network"
-          - "loadavg"
-          - "date_time"
+          - hardware
+          - loadavg
+          - memory
 
-    - name: 2b. Extract raw Linux values (cast to int)
+    - name: 2b. Set Linux RAM/CPU facts with casting
       when: ansible_os_family in ["RedHat", "Debian"]
       ansible.builtin.set_fact:
-        total_ram_mb_raw: "{{ ansible_facts.memtotal_mb | int }}"
-        free_ram_mb_raw: "{{ ansible_facts.memfree_mb | int }}"
-        cpu_cores_raw: "{{ ansible_facts.processor_cores | int }}"
-        cpu_count_raw: "{{ ansible_facts.processor_count | int }}"
-        load_avg_1min: "{{ ansible_facts.load_avg[0] | float }}"
-
-    - name: 2c. Calculate Linux RAM/CPU usage
-      when: ansible_os_family in ["RedHat", "Debian"]
-      ansible.builtin.set_fact:
-        used_ram_mb: "{{ total_ram_mb_raw - free_ram_mb_raw }}"
-        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb_raw) * 100) | round(2) if total_ram_mb_raw > 0 else 0 }}"
-        cpu_count: "{{ cpu_cores_raw * cpu_count_raw }}"
-        cpu_load_percent: "{{ ((load_avg_1min / cpu_count) * 100) | round(2) if cpu_count > 0 else 0 }}"
+        total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
+        free_ram_mb: "{{ ansible_facts.memfree_mb | int }}"
+        used_ram_mb: "{{ total_ram_mb - free_ram_mb }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) if total_ram_mb > 0 else 0 }}"
+        cpu_cores: "{{ (ansible_facts.processor_cores | int) * (ansible_facts.processor_count | int) }}"
+        cpu_load_percent: "{{ ((ansible_facts.load_avg[0] | float / cpu_cores) * 100) | round(2) if cpu_cores > 0 else 0 }}"
 
     # ===================================================================
-    # == WINDOWS SECTION
+    # == WINDOWS BLOCK
     # ===================================================================
-    - name: 2d. Set Windows RAM and CPU usage facts
+    - name: 2c. Set Windows RAM/CPU facts
       when: ansible_os_family == "Windows"
       ansible.builtin.set_fact:
         total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
@@ -71,30 +62,27 @@
         cpu_load_percent: "{{ ansible_facts.processor_load | default(0) | float }}"
 
     # ===================================================================
-    # == COMMON LOGIC
+    # == COMMON LOGGING BLOCK
     # ===================================================================
-    - name: 3. Set RAM/CPU status flags
+    - name: 3. Set RAM/CPU health status
       ansible.builtin.set_fact:
         ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
         cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
 
-    - name: 4. Format the log message
+    - name: 4. Format log message
       ansible.builtin.set_fact:
         log_message: >-
           [{{ ansible_facts.date_time.iso8601 }}]
           HOST={{ inventory_hostname }}
           OS={{ ansible_os_family }}
-          RAM={{ ram_usage_percent }}% ({{ ram_status }})
-          CPU={{ cpu_load_percent }}% ({{ cpu_status }})
+          RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
+          CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
 
-    # ===================================================================
-    # == OUTPUT
-    # ===================================================================
-    - name: 5. Display the result in AWX job output
+    - name: 5. Show result in AWX output
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    - name: 6. Append result to the central log file on the controller
+    - name: 6. Write log to central AWX file
       ansible.builtin.lineinfile:
         path: "{{ log_file_path }}"
         line: "{{ log_message }}"
