@@ -1,0 +1,85 @@
+---
+- name: Precheck SSH connectivity
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: 0.1 Ping the host to verify SSH access
+      ansible.builtin.ping:
+
+- name: Check System Resources and Log Status
+  hosts: all
+  gather_facts: false
+
+  vars:
+    ram_threshold: 60.0
+    cpu_threshold: 80.0
+    log_file_path: "/var/log/awx/output.log"
+
+  tasks:
+    - name: 1. Gather OS and minimal facts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "os_family"
+          - "processor"
+          - "date_time"
+
+    - name: 2a. Gather full facts for Linux (RAM, CPU load)
+      when: ansible_facts['os_family'] in ["RedHat", "Debian"]
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+          - loadavg
+
+    - name: 2b. Set Linux RAM and CPU usage facts
+      when: ansible_facts.get('memtotal_mb') is defined and
+            ansible_facts.get('memfree_mb') is defined and
+            ansible_facts['os_family'] in ["RedHat", "Debian"]
+      ansible.builtin.set_fact:
+        total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
+        free_ram_mb: "{{ ansible_facts.memfree_mb | int }}"
+        used_ram_mb: "{{ total_ram_mb - free_ram_mb }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
+        cpu_cores: "{{ (ansible_facts.processor_cores | int) * (ansible_facts.processor_count | int) }}"
+        cpu_load_percent: "{{ ((ansible_facts.load_avg[0] | float / cpu_cores) * 100) | round(2) if cpu_cores > 0 else 0 }}"
+
+    - name: 2c. Set Windows RAM and CPU usage facts
+      when: ansible_facts['os_family'] == "Windows"
+      ansible.builtin.set_fact:
+        total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
+        free_ram_mb: "{{ ansible_facts.memfree_mb | int }}"
+        used_ram_mb: "{{ total_ram_mb - free_ram_mb }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
+        cpu_load_percent: "{{ ansible_facts.processor_load | default(0) | float }}"
+
+    - name: 3. Set health status
+      when: total_ram_mb is defined and ram_usage_percent is defined and cpu_load_percent is defined
+      ansible.builtin.set_fact:
+        ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
+        cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
+
+    - name: 4. Format log message
+      when: ram_status is defined and cpu_status is defined
+      ansible.builtin.set_fact:
+        log_message: >-
+          [{{ ansible_facts.date_time.iso8601 }}]
+          HOST={{ inventory_hostname }}
+          OS={{ ansible_facts.os_family }}
+          RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
+          CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
+
+    - name: 5. Show result in AWX output
+      when: log_message is defined
+      ansible.builtin.debug:
+        msg: "{{ log_message }}"
+
+    - name: 6. Append result to central log file on AWX controller
+      when: log_message is defined
+      ansible.builtin.lineinfile:
+        path: "{{ log_file_path }}"
+        line: "{{ log_message }}"
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: true
