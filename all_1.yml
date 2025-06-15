@@ -36,22 +36,22 @@
       ansible.builtin.setup:
         gather_subset:
           - "hardware"
-          - "network"
           - "virtual"
-          - "processors"
+          - "network"
+          - "loadavg"
           - "date_time"
 
     - name: 2b. Set Linux RAM and CPU usage facts
       when: ansible_os_family in ["RedHat", "Debian"]
       ansible.builtin.set_fact:
-        total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
-        used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
-        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
-        cpu_count: "{{ ansible_facts.processor_cores * ansible_facts.processor_count }}"
+        total_ram_mb: "{{ ansible_facts.memtotal_mb | default(0) }}"
+        used_ram_mb: "{{ (ansible_facts.memtotal_mb - ansible_facts.memfree_mb) | default(0) }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) if total_ram_mb > 0 else 0 }}"
+        cpu_count: "{{ ansible_facts.processor_cores * ansible_facts.processor_count | default(1) }}"
         cpu_load_percent: >-
           {{
             (ansible_facts.load_avg[0] / cpu_count * 100) | round(2)
-            if ansible_facts.load_avg is defined else 0
+            if ansible_facts.load_avg is defined and cpu_count > 0 else 0
           }}
 
     # ===================================================================
