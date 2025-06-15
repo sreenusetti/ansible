@@ -1,0 +1,25 @@
+---
+- name: Windows Directory, File, and Log Update
+  hosts: all
+  gather_facts: no
+  tasks:
+
+    - name: Create the directory C:\CustomFolder
+      ansible.windows.win_file:
+        path: C:\CustomFolder
+        state: directory
+
+    - name: Create a file C:\CustomFolder\status.txt
+      ansible.windows.win_copy:
+        content: "Directory and file created successfully."
+        dest: C:\CustomFolder\status.txt
+
+    - name: Ensure log directory exists C:\log
+      ansible.windows.win_file:
+        path: C:\log
+        state: directory
+
+    - name: Write status to C:\log\execution.log with timestamp
+      ansible.windows.win_shell: |
+        $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        "[$time] Created C:\CustomFolder and status.txt" | Out-File -FilePath C:\log\execution.log -Append
