@@ -2,14 +2,11 @@
 - name: Precheck SSH connectivity
   hosts: all
   gather_facts: false
-  # This ignore_unreachable is useful if some hosts in your inventory might be down.
-  # The playbook won't fail entirely, and the precheck will report which hosts are unreachable.
-  ignore_unreachable: true 
+  ignore_unreachable: true # Good practice: Don't fail the whole run if one host is down
 
   tasks:
     - name: 0.1 Ping the host to verify SSH access
       ansible.builtin.ping:
-      register: ping_result
 
 - name: Check System Resources and Log Status
   hosts: all
@@ -20,90 +17,92 @@
     cpu_threshold: 80.0
     log_file_path: "/var/log/awx/output.log"
 
+    # Central map for OS-specific metrics. Makes the playbook easier to read and extend.
+    metrics_map:
+      # Define Linux metrics once using a YAML anchor (&)
+      linux_base_metrics: &linux_metrics
+        cpu_load_raw: "{{ ansible_facts.load_avg[0] | default(0) | float }}"
+        cpu_cores: "{{ (ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1) | int) * ansible_facts.processor_count | default(1) | int) }}"
+
+      # Apply the Linux metrics to RedHat and Debian using a YAML alias (*)
+      RedHat: *linux_metrics
+      Debian: *linux_metrics
+      
+      Windows:
+        # For Windows, the CPU percentage is already normalized.
+        # We set cores to 1 to make the final calculation formula consistent.
+        cpu_load_raw: "{{ ansible_facts.processor_load.Processor._Total | default(0) | float }}"
+        cpu_cores: 1
+
   tasks:
-    - name: 1. Gather OS and minimal facts
+    - name: 1. Gather minimal facts (OS family, datetime)
       ansible.builtin.setup:
         gather_subset:
           - "!all"
-          - "os_family"
-          - "processor"
-          - "date_time"
+          - os_family
+          - date_time
 
-    - name: 2a. Gather full hardware facts for Linux (RAM, CPU load)
-      when: ansible_facts['os_family'] in ["RedHat", "Debian"]
+    - name: 2. Gather hardware facts for supported OS families
+      when: ansible_facts.os_family in metrics_map
       ansible.builtin.setup:
         gather_subset:
           - hardware
-          - loadavg
+          - loadavg # For Linux
 
-    - name: 2b. Gather full hardware facts for Windows (RAM, CPU load)
-      when: ansible_facts['os_family'] == "Windows"
-      ansible.builtin.setup:
-        gather_subset:
-          - hardware
-          # Note: For Windows, processor load is often gathered by default with hardware facts.
+    # Use a block to perform calculations and a rescue to handle any errors gracefully.
+    - name: 3. Calculate and Log Health Metrics
+      block:
+        - name: 3a. Set OS-specific metric variables
+          when: ansible_facts.os_family in metrics_map
+          ansible.builtin.set_fact:
+            os_metrics: "{{ metrics_map[ansible_facts.os_family] }}"
 
-    # --- LINUX FACTS SECTION ---
-    - name: 3a. Set base facts for Linux
-      when: ansible_facts['os_family'] in ["RedHat", "Debian"] and
-            ansible_facts.get('memtotal_mb') is defined
-      ansible.builtin.set_fact:
-        total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
-        free_ram_mb: "{{ ansible_facts.memfree_mb | int }}"
-        cpu_cores: "{{ (ansible_facts.processor_cores | int) * (ansible_facts.processor_count | int) }}"
+        - name: 3b. Perform common RAM and CPU calculations
+          # This single task replaces the separate Linux/Windows logic from the old script.
+          ansible.builtin.set_fact:
+            total_ram_mb: "{{ ansible_facts.memtotal_mb | default(0) | int }}"
+            free_ram_mb: "{{ ansible_facts.memfree_mb | default(0) | int }}"
+            used_ram_mb: "{{ (ansible_facts.memtotal_mb | int) - (ansible_facts.memfree_mb | int) }}"
+            ram_usage_percent: >-
+              {{ (( (ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb) * 100) | round(2) }}
+            cpu_load_percent: >-
+              {{ ((os_metrics.cpu_load_raw / os_metrics.cpu_cores) * 100) | round(2) if os_metrics.cpu_cores > 0 else 0 }}
 
-    - name: 3b. Calculate derived metrics for Linux
-      when: total_ram_mb is defined and ansible_facts['os_family'] in ["RedHat", "Debian"]
-      ansible.builtin.set_fact:
-        used_ram_mb: "{{ total_ram_mb - free_ram_mb }}"
-        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
-        cpu_load_percent: "{{ ((ansible_facts.load_avg[0] | float / cpu_cores) * 100) | round(2) if cpu_cores > 0 else 0 }}"
+        - name: 3c. Set health status based on thresholds
+          ansible.builtin.set_fact:
+            ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
+            cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
 
-    # --- WINDOWS FACTS SECTION ---
-    - name: 4a. Set base facts for Windows
-      when: ansible_facts['os_family'] == "Windows" and
-            ansible_facts.get('memtotal_mb') is defined
-      ansible.builtin.set_fact:
-        total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
-        free_ram_mb: "{{ ansible_facts.memfree_mb | int }}"
+        - name: 3d. Format success log message
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 }}]
+              HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family }}
+              RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
+              CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
 
-    - name: 4b. Calculate derived metrics for Windows
-      when: total_ram_mb is defined and ansible_facts['os_family'] == "Windows"
-      ansible.builtin.set_fact:
-        used_ram_mb: "{{ total_ram_mb - free_ram_mb }}"
-        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
-        # ansible_processor_load fact may not exist; provide a default.
-        cpu_load_percent: "{{ ansible_facts.processor_load.Processor._Total | default(0) | float }}"
+      rescue:
+        - name: 3e. Format error log message
+          # This runs if any task in the 'block' fails for a host.
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 }}]
+              HOST={{ inventory_hostname }}
+              STATUS=Error
+              MESSAGE="Failed to gather or calculate system metrics. OS may be unsupported or facts unavailable."
 
-    # --- COMMON TASKS ---
-    - name: 5. Set health status based on metrics
-      # This task will run if the previous calculations were successful for either OS
-      when: ram_usage_percent is defined and cpu_load_percent is defined
-      ansible.builtin.set_fact:
-        ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
-        cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
-
-    - name: 6. Format log message
-      when: ram_status is defined and cpu_status is defined
-      ansible.builtin.set_fact:
-        log_message: >-
-          [{{ ansible_facts.date_time.iso8601 }}]
-          HOST={{ inventory_hostname }}
-          OS={{ ansible_facts.os_family }}
-          RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
-          CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
-
-    - name: 7. Show result in AWX output
-      when: log_message is defined
+    # These final tasks run for every host, using the 'log_message'
+    # that was set in either the 'block' or 'rescue' section.
+    - name: 4. Show result in AWX output
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    - name: 8. Append result to central log file on AWX controller
-      when: log_message is defined
+    - name: 5. Append result to central log file
+      delegate_to: localhost
+      become: true
       ansible.builtin.lineinfile:
         path: "{{ log_file_path }}"
         line: "{{ log_message }}"
         create: true
         mode: "0644"
-      delegate_to: localhost
-      become: true
