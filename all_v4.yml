@@ -1,29 +1,25 @@
 ---
-- name: Precheck SSH connectivity
+- name: Precheck connectivity
   hosts: all
   gather_facts: false
   ignore_unreachable: true
 
   tasks:
-    - name: 0.1 Ping the host to verify SSH access
+    - name: 0.1 Ping the host to verify access
       ansible.builtin.ping:
 
 - name: Check System Resources and Log Status
   hosts: all
   gather_facts: false
 
-  # --- SOLUTION: Define OS-specific log paths ---
   vars:
     ram_threshold: 60.0
     cpu_threshold: 80.0
-    # This map defines the log file location on the target machine for each OS.
     log_path_map:
       RedHat: /var/log/system_health.log
       Debian: /var/log/system_health.log
       Windows: C:\Windows\Temp\system_health.log
 
-    # This map defines how to calculate metrics for each OS.
-    # Types are cast here (int, float) to prevent errors later.
     metrics_map:
       linux_base_metrics: &linux_metrics
         cpu_load_raw: "{{ (ansible_facts.load_avg[0] | default(0)) | float }}"
@@ -32,23 +28,16 @@
             ((ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1)) | int) *
             (ansible_facts.processor_count | default(1) | int)) | int
           }}
-
       RedHat: *linux_metrics
       Debian: *linux_metrics
-
       Windows:
         cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0)) | float }}"
-        cpu_cores: 1 # Set to 1 for Windows as the load is already a normalized percentage.
+        cpu_cores: 1
 
   tasks:
     - name: 1. Gather minimal and hardware facts
       ansible.builtin.setup:
-        gather_subset:
-          - "!all"
-          - os_family
-          - date_time
-          - hardware
-          - loadavg
+        gather_subset: ["!all", "os_family", "date_time", "hardware", "loadavg"]
 
     - name: 2. Calculate and Format Health Metrics
       block:
@@ -78,7 +67,6 @@
               OS={{ ansible_facts.os_family }}
               RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
               CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
-
       rescue:
         - name: 2e. Format error log message
           ansible.builtin.set_fact:
@@ -89,18 +77,15 @@
               STATUS=Error
               MESSAGE="Failed to gather or calculate system metrics."
 
-    - name: 3. Show result in AWX output (for immediate feedback)
+    - name: 3. Show result in AWX output
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    # --- SOLUTION: Log to the target machine itself ---
     - name: 4. Append result to local log file on target host
-      # This task runs on the remote host, not the controller.
-      # It uses the log_path_map to determine the correct file location.
       when: ansible_facts.os_family in log_path_map
-      become: true # Required to write to system directories like /var/log or C:\Windows\Temp
+      become: true
       ansible.builtin.lineinfile:
         path: "{{ log_path_map[ansible_facts.os_family] }}"
         line: "{{ log_message }}"
         create: true
-        mode: "0644" # Ignored on Windows, but good practice for Linux
+        mode: "0644"
