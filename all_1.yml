@@ -1,0 +1,83 @@
+---
+- name: Check System Resources and Log Status
+  hosts: all
+  gather_facts: false
+
+  vars:
+    ram_threshold: 60.0
+    cpu_threshold: 80.0
+    log_file_path: "/var/log/awx/output.log"
+
+  tasks:
+
+    - name: 1. Gather only OS info first
+      ansible.builtin.setup:
+        gather_subset:
+          - "os_family"
+          - "date_time"
+
+    # ===================================================================
+    # == LINUX SECTION: RAM and CPU checks
+    # ===================================================================
+    - name: 2a. Gather full facts for Linux
+      when: ansible_os_family == "RedHat" or ansible_os_family == "Debian"
+      ansible.builtin.setup:
+        gather_subset:
+          - "hardware"
+          - "network"
+          - "virtual"
+          - "processors"
+          - "date_time"
+
+    - name: 2b. Set Linux RAM and CPU usage facts
+      when: ansible_os_family == "RedHat" or ansible_os_family == "Debian"
+      ansible.builtin.set_fact:
+        total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
+        used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
+        ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+        cpu_count: "{{ ansible_facts.processor_cores * ansible_facts.processor_count }}"
+        cpu_load_percent: "{{ (ansible_facts.processor_cores * 100) | float if ansible_facts.load_avg is not defined else (ansible_facts.load_avg[0] / ansible_facts.processor_cores * 100) | round(2) }}"
+
+    # ===================================================================
+    # == WINDOWS SECTION: RAM and CPU checks
+    # ===================================================================
+    - name: 2c. Set Windows RAM and CPU usage facts
+      when: ansible_os_family == "Windows"
+      ansible.builtin.set_fact:
+        total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
+        used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
+        ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+        cpu_count: "{{ ansible_facts.processor_cores }}"
+        cpu_load_percent: "{{ ansible_facts.processor_load | default(0) }}"  # Assume `processor_load` is present from Windows facts
+
+    # ===================================================================
+    # == COMMON EVALUATION LOGIC
+    # ===================================================================
+    - name: 3. Set status flags
+      ansible.builtin.set_fact:
+        ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
+        cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
+
+    - name: 4. Prepare log message
+      ansible.builtin.set_fact:
+        log_message: >
+          [{{ ansible_facts.date_time.iso8601 }}] HOST={{ inventory_hostname }}
+          OS={{ ansible_os_family }}
+          RAM={{ ram_usage_percent }}% ({{ ram_status }})
+          CPU={{ cpu_load_percent }}% ({{ cpu_status }})
+
+    # ===================================================================
+    # == OUTPUT
+    # ===================================================================
+    - name: 5. Display the result in AWX job output
+      ansible.builtin.debug:
+        msg: "{{ log_message }}"
+
+    - name: 6. Append result to the central log file on the controller
+      ansible.builtin.lineinfile:
+        path: "{{ log_file_path }}"
+        line: "{{ log_message }}"
+        create: true
+        mode: "0644"
+      delegate_to: localhost
+      become: true
