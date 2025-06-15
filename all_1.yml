@@ -1,4 +1,16 @@
 ---
+- name: Precheck SSH connectivity
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: 0.1 Ping the host to verify SSH access
+      ansible.builtin.ping:
+
+# ===================================================================
+# == SYSTEM RESOURCE CHECK & LOGGING
+# ===================================================================
+
 - name: Check System Resources and Log Status
   hosts: all
   gather_facts: false
@@ -10,17 +22,17 @@
 
   tasks:
 
-    - name: 1. Gather only OS info first
+    - name: 1. Gather only OS and time info first
       ansible.builtin.setup:
         gather_subset:
           - "os_family"
           - "date_time"
 
     # ===================================================================
-    # == LINUX SECTION: RAM and CPU checks
+    # == LINUX SECTION
     # ===================================================================
     - name: 2a. Gather full facts for Linux
-      when: ansible_os_family == "RedHat" or ansible_os_family == "Debian"
+      when: ansible_os_family in ["RedHat", "Debian"]
       ansible.builtin.setup:
         gather_subset:
           - "hardware"
@@ -30,38 +42,43 @@
           - "date_time"
 
     - name: 2b. Set Linux RAM and CPU usage facts
-      when: ansible_os_family == "RedHat" or ansible_os_family == "Debian"
+      when: ansible_os_family in ["RedHat", "Debian"]
       ansible.builtin.set_fact:
         total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
         used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
-        ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
         cpu_count: "{{ ansible_facts.processor_cores * ansible_facts.processor_count }}"
-        cpu_load_percent: "{{ (ansible_facts.processor_cores * 100) | float if ansible_facts.load_avg is not defined else (ansible_facts.load_avg[0] / ansible_facts.processor_cores * 100) | round(2) }}"
+        cpu_load_percent: >-
+          {{
+            (ansible_facts.load_avg[0] / cpu_count * 100) | round(2)
+            if ansible_facts.load_avg is defined else 0
+          }}
 
     # ===================================================================
-    # == WINDOWS SECTION: RAM and CPU checks
+    # == WINDOWS SECTION
     # ===================================================================
     - name: 2c. Set Windows RAM and CPU usage facts
       when: ansible_os_family == "Windows"
       ansible.builtin.set_fact:
         total_ram_mb: "{{ ansible_facts.memtotal_mb }}"
         used_ram_mb: "{{ ansible_facts.memtotal_mb - ansible_facts.memfree_mb }}"
-        ram_usage_percent: "{{ ((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb * 100) | round(2) }}"
+        ram_usage_percent: "{{ ((used_ram_mb / total_ram_mb) * 100) | round(2) }}"
         cpu_count: "{{ ansible_facts.processor_cores }}"
-        cpu_load_percent: "{{ ansible_facts.processor_load | default(0) }}"  # Assume `processor_load` is present from Windows facts
+        cpu_load_percent: "{{ ansible_facts.processor_load | default(0) }}"
 
     # ===================================================================
-    # == COMMON EVALUATION LOGIC
+    # == COMMON LOGIC
     # ===================================================================
-    - name: 3. Set status flags
+    - name: 3. Set RAM/CPU status flags
       ansible.builtin.set_fact:
         ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
         cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
 
-    - name: 4. Prepare log message
+    - name: 4. Format the log message
       ansible.builtin.set_fact:
-        log_message: >
-          [{{ ansible_facts.date_time.iso8601 }}] HOST={{ inventory_hostname }}
+        log_message: >-
+          [{{ ansible_facts.date_time.iso8601 }}]
+          HOST={{ inventory_hostname }}
           OS={{ ansible_os_family }}
           RAM={{ ram_usage_percent }}% ({{ ram_status }})
           CPU={{ cpu_load_percent }}% ({{ cpu_status }})
