@@ -1,0 +1,100 @@
+---
+- name: Precheck SSH connectivity
+  hosts: all
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: 0.1 Ping the host to verify SSH access
+      ansible.builtin.ping:
+
+- name: Check System Resources and Log Status
+  hosts: all
+  gather_facts: false
+
+  vars:
+    ram_threshold: 60.0
+    cpu_threshold: 80.0
+    log_file_path: "health_check_output.log" # Writable path in the AWX container
+
+    # --- THE DEFINITIVE FIX ---
+    # We will cast the values to the correct data type (int, float) right here
+    # during their definition. This ensures they are never treated as strings later.
+    metrics_map:
+      linux_base_metrics: &linux_metrics
+        cpu_load_raw: "{{ (ansible_facts.load_avg[0] | default(0)) | float }}"
+        cpu_cores: >-
+          {{
+            ((ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1)) | int) *
+            (ansible_facts.processor_count | default(1) | int)) | int
+          }}
+
+      RedHat: *linux_metrics
+      Debian: *linux_metrics
+
+      Windows:
+        cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0)) | float }}"
+        cpu_cores: 1 # This is already an integer, so it's safe.
+
+  tasks:
+    - name: 1. Gather minimal and hardware facts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - os_family
+          - date_time
+          - hardware
+          - loadavg
+
+    - name: 2. Calculate and Log Health Metrics
+      block:
+        - name: 2a. Set OS-specific metric variables from map
+          when: ansible_facts.os_family in metrics_map
+          ansible.builtin.set_fact:
+            os_metrics: "{{ metrics_map[ansible_facts.os_family] }}"
+
+        - name: 2b. Perform common RAM and CPU calculations
+          ansible.builtin.set_fact:
+            used_ram_mb: "{{ (ansible_facts.memtotal_mb | int) - (ansible_facts.memfree_mb | int) }}"
+            ram_usage_percent: >-
+              {{ (((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb) * 100) | round(2) }}
+            # Now this calculation is safe. The variables are already numbers,
+            # so no extra filters are needed here. The 'if' condition will work correctly.
+            cpu_load_percent: >-
+              {{ ((os_metrics.cpu_load_raw / os_metrics.cpu_cores) * 100) | round(2) if os_metrics.cpu_cores > 0 else 0 }}
+
+        - name: 2c. Set health status based on thresholds
+          ansible.builtin.set_fact:
+            ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
+            cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
+
+        - name: 2d. Format success log message
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 }}]
+              HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family }}
+              RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
+              CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
+
+      rescue:
+        - name: 2e. Format error log message
+          ansible.builtin.set_fact:
+            log_message: >-
+              [{{ ansible_facts.date_time.iso8601 }}]
+              HOST={{ inventory_hostname }}
+              OS={{ ansible_facts.os_family | default('Unknown') }}
+              STATUS=Error
+              MESSAGE="Failed to gather or calculate system metrics."
+
+    - name: 3. Show result in AWX output
+      ansible.builtin.debug:
+        msg: "{{ log_message }}"
+
+    - name: 4. Append result to central log file
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: "{{ log_file_path }}"
+        line: "{{ log_message }}"
+        create: true
+        mode: "0644"
