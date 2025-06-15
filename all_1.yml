@@ -18,7 +18,7 @@
 
   tasks:
 
-    - name: 1. Gather only minimal facts
+    - name: 1. Gather only minimal facts (OS + time)
       ansible.builtin.setup:
         gather_subset:
           - "!all"
@@ -31,9 +31,8 @@
         gather_subset:
           - hardware
           - loadavg
-          - memory
 
-    - name: 2b. Set Linux RAM/CPU facts
+    - name: 2b. Set Linux RAM and CPU usage facts
       when: ansible_facts['os_family'] in ["RedHat", "Debian"]
       ansible.builtin.set_fact:
         total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
@@ -43,7 +42,7 @@
         cpu_cores: "{{ (ansible_facts.processor_cores | int) * (ansible_facts.processor_count | int) }}"
         cpu_load_percent: "{{ ((ansible_facts.load_avg[0] | float / cpu_cores) * 100) | round(2) if cpu_cores > 0 else 0 }}"
 
-    - name: 2c. Set Windows RAM/CPU facts
+    - name: 2c. Set Windows RAM and CPU usage facts
       when: ansible_facts['os_family'] == "Windows"
       ansible.builtin.set_fact:
         total_ram_mb: "{{ ansible_facts.memtotal_mb | int }}"
@@ -66,11 +65,11 @@
           RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
           CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
 
-    - name: 5. Show result in AWX job output
+    - name: 5. Display result in AWX output
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    - name: 6. Write to central log on controller
+    - name: 6. Append result to central log file on controller
       ansible.builtin.lineinfile:
         path: "{{ log_file_path }}"
         line: "{{ log_message }}"
