@@ -12,94 +12,95 @@
   hosts: all
   gather_facts: false
 
+  # --- SOLUTION: Define OS-specific log paths ---
   vars:
-    ram_threshold: "{{ ram_threshold | default(60.0) | float }}"
-    cpu_threshold: "{{ cpu_threshold | default(80.0) | float }}"
+    ram_threshold: 60.0
+    cpu_threshold: 80.0
+    # This map defines the log file location on the target machine for each OS.
     log_path_map:
-      RedHat: "{{ log_file_path | default('/var/log/system_health.log') }}"
-      Debian: "{{ log_file_path | default('/var/log/system_health.log') }}"
-      Ubuntu: "{{ log_file_path | default('/var/log/system_health.log') }}"
-      Windows: "{{ log_file_path | default('C:\\Windows\\Temp\\system_health.log') }}"
+      RedHat: /var/log/system_health.log
+      Debian: /var/log/system_health.log
+      Windows: C:\Windows\Temp\system_health.log
+
+    # This map defines how to calculate metrics for each OS.
+    # Types are cast here (int, float) to prevent errors later.
     metrics_map:
       linux_base_metrics: &linux_metrics
-        cpu_load_raw: "{{ (ansible_facts.loadavg[0] | default(0.0)) | float }}"
-        cpu_cores: "{{ ((ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1)) | int) * (ansible_facts.processor_count | default(1) | int)) | int }}"
+        cpu_load_raw: "{{ (ansible_facts.load_avg[0] | default(0)) | float }}"
+        cpu_cores: >-
+          {{
+            ((ansible_facts.processor_vcpus | default(ansible_facts.processor_cores | default(1)) | int) *
+            (ansible_facts.processor_count | default(1) | int)) | int
+          }}
+
       RedHat: *linux_metrics
       Debian: *linux_metrics
-      Ubuntu: *linux_metrics
+
       Windows:
-        cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0.0)) | float }}"
-        cpu_cores: "{{ 1 | int }}"
+        cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0)) | float }}"
+        cpu_cores: 1 # Set to 1 for Windows as the load is already a normalized percentage.
 
   tasks:
     - name: 1. Gather minimal and hardware facts
       ansible.builtin.setup:
         gather_subset:
           - "!all"
-          - "os_family"
-          - "date_time"
-          - "hardware"
-          - "loadavg"
-      register: fact_setup
-      ignore_errors: true
+          - os_family
+          - date_time
+          - hardware
+          - loadavg
 
-    - name: 2. Fail if OS is unsupported
-      ansible.builtin.fail:
-        msg: "Unsupported OS family: {{ ansible_facts.os_family | default('Unknown') }}. Supported OS families: {{ metrics_map.keys() | join(', ') }}"
-      when: ansible_facts.os_family | default('Unknown') not in metrics_map
-      failed_when: true
-
-    - name: 3. Calculate and Format Health Metrics
+    - name: 2. Calculate and Format Health Metrics
       block:
-        - name: 3a. Set OS-specific metric variables from map
+        - name: 2a. Set OS-specific metric variables from map
+          when: ansible_facts.os_family in metrics_map
           ansible.builtin.set_fact:
             os_metrics: "{{ metrics_map[ansible_facts.os_family] }}"
-          when: ansible_facts.os_family in metrics_map
 
-        - name: 3b. Perform common RAM and CPU calculations
+        - name: 2b. Perform common RAM and CPU calculations
           ansible.builtin.set_fact:
-            used_ram_mb: "{{ (ansible_facts.memtotal_mb | default(0) | int) - (ansible_facts.memfree_mb | default(0) | int) }}"
-            ram_usage_percent: "{{ (((ansible_facts.memtotal_mb | int - ansible_facts.memfree_mb | int) / ansible_facts.memtotal_mb | float) * 100) | round(2) }}"
-            cpu_load_percent: "{{ ((os_metrics.cpu_load_raw | float / os_metrics.cpu_cores | int) * 100) | round(2) if (os_metrics.cpu_cores | int) > 0 else 0.0 }}"
+            used_ram_mb: "{{ (ansible_facts.memtotal_mb | int) - (ansible_facts.memfree_mb | int) }}"
+            ram_usage_percent: >-
+              {{ (((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb) * 100) | round(2) }}
+            cpu_load_percent: >-
+              {{ ((os_metrics.cpu_load_raw / os_metrics.cpu_cores) * 100) | round(2) if os_metrics.cpu_cores > 0 else 0 }}
+
+        - name: 2c. Set health status based on thresholds
+          ansible.builtin.set_fact:
             ram_status: "{{ 'Critical' if ram_usage_percent > ram_threshold else 'Good' }}"
             cpu_status: "{{ 'Critical' if cpu_load_percent > cpu_threshold else 'Good' }}"
-          when: ansible_facts.memtotal_mb is defined
 
-        - name: 3c. Format success log message
+        - name: 2d. Format success log message
           ansible.builtin.set_fact:
             log_message: >-
-              [{{ ansible_facts.date_time.iso8601 | default('unknown') }}]
+              [{{ ansible_facts.date_time.iso8601 }}]
               HOST={{ inventory_hostname }}
               OS={{ ansible_facts.os_family }}
-              RAM_USAGE={{ ram_usage_percent | default(0.0) }}% ({{ ram_status | default('Unknown') }})
-              CPU_USAGE={{ cpu_load_percent | default(0.0) }}% ({{ cpu_status | default('Unknown') }})
+              RAM_USAGE={{ ram_usage_percent }}% ({{ ram_status }})
+              CPU_USAGE={{ cpu_load_percent }}% ({{ cpu_status }})
+
       rescue:
-        - name: 3d. Format error log message
+        - name: 2e. Format error log message
           ansible.builtin.set_fact:
             log_message: >-
-              [{{ ansible_facts.date_time.iso8601 | default('unknown') }}]
+              [{{ ansible_facts.date_time.iso8601 }}]
               HOST={{ inventory_hostname }}
               OS={{ ansible_facts.os_family | default('Unknown') }}
               STATUS=Error
-              MESSAGE="Failed to gather or calculate system metrics. OS may be unsupported or facts unavailable."
+              MESSAGE="Failed to gather or calculate system metrics."
 
-    - name: 4. Show result in AWX output
+    - name: 3. Show result in AWX output (for immediate feedback)
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    - name: 5. Ensure log directory exists on target host
-      ansible.builtin.file:
-        path: "{{ log_path_map[ansible_facts.os_family] | dirname }}"
-        state: directory
-        mode: '0755'
-      become: true
-      when: ansible_facts.os_family in log_path_map and ansible_facts.os_family != 'Windows'
-
-    - name: 6. Append result to local log file on target host
+    # --- SOLUTION: Log to the target machine itself ---
+    - name: 4. Append result to local log file on target host
+      # This task runs on the remote host, not the controller.
+      # It uses the log_path_map to determine the correct file location.
+      when: ansible_facts.os_family in log_path_map
+      become: true # Required to write to system directories like /var/log or C:\Windows\Temp
       ansible.builtin.lineinfile:
         path: "{{ log_path_map[ansible_facts.os_family] }}"
         line: "{{ log_message }}"
         create: true
-        mode: "0644"
-      become: true
-      when: ansible_facts.os_family in log_path_map
+        mode: "0644" # Ignored on Windows, but good practice for Linux
