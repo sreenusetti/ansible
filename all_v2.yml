@@ -15,7 +15,11 @@
   vars:
     ram_threshold: 60.0
     cpu_threshold: 80.0
-    log_file_path: "/var/log/awx/output.log"
+    # --- SOLUTION ---
+    # Change the log path to a location writable by the 'runner' user inside the
+    # AWX Execution Environment. The '/runner/project/' directory is the standard
+    # location for job artifacts. This avoids the need for `sudo`.
+    log_file_path: "health_check_output.log" # This file will be created in the project directory
 
     # Central map for OS-specific metrics. Makes the playbook easier to read and extend.
     metrics_map:
@@ -27,7 +31,7 @@
       # Apply the Linux metrics to RedHat and Debian using a YAML alias (*)
       RedHat: *linux_metrics
       Debian: *linux_metrics
-      
+
       Windows:
         # For Windows, the CPU percentage is already normalized.
         # We set cores to 1 to make the final calculation formula consistent.
@@ -58,7 +62,6 @@
             os_metrics: "{{ metrics_map[ansible_facts.os_family] }}"
 
         - name: 3b. Perform common RAM and CPU calculations
-          # This single task replaces the separate Linux/Windows logic from the old script.
           ansible.builtin.set_fact:
             total_ram_mb: "{{ ansible_facts.memtotal_mb | default(0) | int }}"
             free_ram_mb: "{{ ansible_facts.memfree_mb | default(0) | int }}"
@@ -84,7 +87,6 @@
 
       rescue:
         - name: 3e. Format error log message
-          # This runs if any task in the 'block' fails for a host.
           ansible.builtin.set_fact:
             log_message: >-
               [{{ ansible_facts.date_time.iso8601 }}]
@@ -92,15 +94,15 @@
               STATUS=Error
               MESSAGE="Failed to gather or calculate system metrics. OS may be unsupported or facts unavailable."
 
-    # These final tasks run for every host, using the 'log_message'
-    # that was set in either the 'block' or 'rescue' section.
     - name: 4. Show result in AWX output
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
     - name: 5. Append result to central log file
       delegate_to: localhost
-      become: true
+      # --- SOLUTION ---
+      # Remove `become: true`. We are now writing to a path where the execution
+      # user has permissions, so privilege escalation is not needed.
       ansible.builtin.lineinfile:
         path: "{{ log_file_path }}"
         line: "{{ log_message }}"
