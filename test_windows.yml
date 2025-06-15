@@ -1,7 +1,24 @@
 ---
-- name: Test Windows Connection
-  hosts: all
+# THIS IS A DIAGNOSTIC PLAYBOOK, NOT FOR PRODUCTION USE.
+# It hard-codes credentials and connection settings to bypass all AWX inventory.
+- name: Hard-Coded Windows Connection Test
+  # We target the IP directly, ignoring the inventory completely.
+  hosts: 10.206.2.30
+
+  # We define all connection variables right here. These have the highest priority.
+  vars:
+    # --- IMPORTANT: REPLACE THESE VALUES ---
+    ansible_user: "YOUR_WINDOWS_USERNAME"
+    ansible_password: "YOUR_WINDOWS_PASSWORD"
+    # ------------------------------------
+
+    # Hard-coded connection settings to force WinRM
+    ansible_connection: winrm
+    ansible_port: 5986
+    ansible_winrm_scheme: https
+    ansible_winrm_server_cert_validation: ignore
+
   gather_facts: false
   tasks:
-    - name: Ping Windows host via WinRM
+    - name: Ping Windows host via WinRM with hard-coded settings
       ansible.windows.win_ping:
