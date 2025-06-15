@@ -12,14 +12,18 @@
   hosts: all
   gather_facts: false
 
+  # --- SOLUTION: Define OS-specific log paths ---
   vars:
     ram_threshold: 60.0
     cpu_threshold: 80.0
-    log_file_path: "health_check_output.log" # Writable path in the AWX container
+    # This map defines the log file location on the target machine for each OS.
+    log_path_map:
+      RedHat: /var/log/system_health.log
+      Debian: /var/log/system_health.log
+      Windows: C:\Windows\Temp\system_health.log
 
-    # --- THE DEFINITIVE FIX ---
-    # We will cast the values to the correct data type (int, float) right here
-    # during their definition. This ensures they are never treated as strings later.
+    # This map defines how to calculate metrics for each OS.
+    # Types are cast here (int, float) to prevent errors later.
     metrics_map:
       linux_base_metrics: &linux_metrics
         cpu_load_raw: "{{ (ansible_facts.load_avg[0] | default(0)) | float }}"
@@ -34,7 +38,7 @@
 
       Windows:
         cpu_load_raw: "{{ (ansible_facts.processor_load.Processor._Total | default(0)) | float }}"
-        cpu_cores: 1 # This is already an integer, so it's safe.
+        cpu_cores: 1 # Set to 1 for Windows as the load is already a normalized percentage.
 
   tasks:
     - name: 1. Gather minimal and hardware facts
@@ -46,7 +50,7 @@
           - hardware
           - loadavg
 
-    - name: 2. Calculate and Log Health Metrics
+    - name: 2. Calculate and Format Health Metrics
       block:
         - name: 2a. Set OS-specific metric variables from map
           when: ansible_facts.os_family in metrics_map
@@ -58,8 +62,6 @@
             used_ram_mb: "{{ (ansible_facts.memtotal_mb | int) - (ansible_facts.memfree_mb | int) }}"
             ram_usage_percent: >-
               {{ (((ansible_facts.memtotal_mb - ansible_facts.memfree_mb) / ansible_facts.memtotal_mb) * 100) | round(2) }}
-            # Now this calculation is safe. The variables are already numbers,
-            # so no extra filters are needed here. The 'if' condition will work correctly.
             cpu_load_percent: >-
               {{ ((os_metrics.cpu_load_raw / os_metrics.cpu_cores) * 100) | round(2) if os_metrics.cpu_cores > 0 else 0 }}
 
@@ -87,14 +89,18 @@
               STATUS=Error
               MESSAGE="Failed to gather or calculate system metrics."
 
-    - name: 3. Show result in AWX output
+    - name: 3. Show result in AWX output (for immediate feedback)
       ansible.builtin.debug:
         msg: "{{ log_message }}"
 
-    - name: 4. Append result to central log file
-      delegate_to: localhost
+    # --- SOLUTION: Log to the target machine itself ---
+    - name: 4. Append result to local log file on target host
+      # This task runs on the remote host, not the controller.
+      # It uses the log_path_map to determine the correct file location.
+      when: ansible_facts.os_family in log_path_map
+      become: true # Required to write to system directories like /var/log or C:\Windows\Temp
       ansible.builtin.lineinfile:
-        path: "{{ log_file_path }}"
+        path: "{{ log_path_map[ansible_facts.os_family] }}"
         line: "{{ log_message }}"
         create: true
-        mode: "0644"
+        mode: "0644" # Ignored on Windows, but good practice for Linux
