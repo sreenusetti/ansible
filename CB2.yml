@@ -3,9 +3,6 @@
   hosts: all
   gather_facts: true
 
-  # We only need to become root for one specific task on localhost,
-  # so we don't set it at the play level.
-
   tasks:
     - name: Set OS family fact for easier conditioning
       set_fact:
@@ -22,7 +19,7 @@
             - name: Get CPU usage (Linux)
               shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
               register: linux_cpu
-              changed_when: false # This command doesn't change state
+              changed_when: false
 
             - name: Get Memory usage (Linux)
               shell: free | awk '/Mem:/ {print ($3/$2) * 100}'
@@ -75,13 +72,12 @@
     # ================================
     # Logging Task (Corrected)
     # ================================
-    - name: Append result to local log file on the control node
+    - name: Append result to a log file in /tmp on the control node
       delegate_to: localhost
-      become: true  # Use sudo to write to /var/log
+      # NOTE: We write to /tmp because the 'runner' user has permission there.
+      # This avoids the need for 'become' and 'sudo', which may not exist in the EE.
       lineinfile:
-        path: /var/log/awx_node_health_check.log
+        path: /tmp/awx_node_health_check.log
         create: yes
-        owner: awx  # Set owner/group to the AWX user for good practice
-        group: awx
-        mode: '0644' # Standard file permissions
+        mode: '0644'
         line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu | float | round(2) }}% | RAM: {{ ram | float | round(2) }}% | Disk: {{ disk | float | round(2) }}% | STATUS: {{ status }}"
