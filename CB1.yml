@@ -2,8 +2,6 @@
 - name: Health Check for Linux and Windows Nodes
   hosts: all
   gather_facts: true
-  vars:
-    result_lines: []
 
   tasks:
     - name: Detect OS Family
@@ -48,12 +46,24 @@
         [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
       register: win_disk
 
-    # --- Combine all results ---
-    - name: Set final values (with float conversion)
+    # --- Combine all results safely ---
+    - name: Set final values (safe with defaults)
       set_fact:
-        cpu: "{{ (os_family == 'Windows') | ternary(win_cpu.stdout | float, linux_cpu.stdout | float) }}"
-        ram: "{{ (os_family == 'Windows') | ternary(win_mem.stdout | float, linux_mem.stdout | float) }}"
-        disk: "{{ (os_family == 'Windows') | ternary(win_disk.stdout | float, linux_disk.stdout | float) }}"
+        cpu: >-
+          {{
+            (os_family == 'Windows')
+            | ternary((win_cpu.stdout | default('0')) | float, (linux_cpu.stdout | default('0')) | float)
+          }}
+        ram: >-
+          {{
+            (os_family == 'Windows')
+            | ternary((win_mem.stdout | default('0')) | float, (linux_mem.stdout | default('0')) | float)
+          }}
+        disk: >-
+          {{
+            (os_family == 'Windows')
+            | ternary((win_disk.stdout | default('0')) | float, (linux_disk.stdout | default('0')) | float)
+          }}
 
     - name: Determine health status
       set_fact:
