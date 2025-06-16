@@ -4,11 +4,15 @@
   gather_facts: true
 
   tasks:
+
     - name: Detect OS Family
       set_fact:
         os_family: "{{ ansible_facts['os_family'] }}"
 
-    # --- Linux Resource Collection ---
+    # =========================
+    # Linux Resource Collection
+    # =========================
+
     - name: Get CPU usage (Linux)
       when: os_family == "RedHat"
       shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
@@ -24,7 +28,10 @@
       shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
       register: linux_disk
 
-    # --- Windows Resource Collection ---
+    # ==========================
+    # Windows Resource Collection
+    # ==========================
+
     - name: Get CPU usage (Windows)
       when: os_family == "Windows"
       win_shell: |
@@ -46,33 +53,35 @@
         [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
       register: win_disk
 
-    # --- Combine all results safely ---
-    - name: Set final values (with float conversion and fallback)
+    # ================================
+    # Normalize and convert to float
+    # ================================
+
+    - name: Set final values (force float conversion)
       set_fact:
         cpu: >-
           {{
             (os_family == 'Windows')
-            | ternary(win_cpu.stdout | default('0'), linux_cpu.stdout | default('0'))
+            | ternary((win_cpu.stdout | float), (linux_cpu.stdout | float))
           }}
         ram: >-
           {{
             (os_family == 'Windows')
-            | ternary(win_mem.stdout | default('0'), linux_mem.stdout | default('0'))
+            | ternary((win_mem.stdout | float), (linux_mem.stdout | float))
           }}
         disk: >-
           {{
             (os_family == 'Windows')
-            | ternary(win_disk.stdout | default('0'), linux_disk.stdout | default('0'))
+            | ternary((win_disk.stdout | float), (linux_disk.stdout | float))
           }}
 
-    - name: Determine health status (safe casting before compare)
+    - name: Determine health status
       set_fact:
-        status: >-
-          {{
-            'CRITICAL'
-            if (cpu | float) > 60 or (ram | float) > 60 or (disk | float) > 60
-            else 'GOOD'
-          }}
+        status: "{{ 'CRITICAL' if cpu > 60 or ram > 60 or disk > 60 else 'GOOD' }}"
+
+    # ====================================
+    # Log to AWX control node (via delegate)
+    # ====================================
 
     - name: Append result to local log file on AWX control node
       delegate_to: localhost
@@ -80,4 +89,4 @@
       lineinfile:
         path: /var/log/awx_node_health_check.log
         create: yes
-        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu | float }}% | RAM: {{ ram | float }}% | Disk: {{ disk | float }}% | STATUS: {{ status }}"
+        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu }}% | RAM: {{ ram }}% | Disk: {{ disk }}% | STATUS: {{ status }}"
