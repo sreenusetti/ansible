@@ -1,0 +1,73 @@
+- name: Health Check for Linux and Windows Nodes
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Detect OS Family
+      set_fact:
+        os_family: "{{ ansible_facts['os_family'] }}"
+
+    # =========================
+    # Linux Resource Collection
+    # =========================
+    - name: Get CPU, Memory, and Disk usage (Linux)
+      when: os_family == "RedHat"
+      block:
+        - name: Get CPU usage (Linux)
+          shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
+          register: linux_cpu
+
+        - name: Get Memory usage (Linux)
+          shell: free | awk '/Mem:/ {print ($3/$2) * 100}'
+          register: linux_mem
+
+        - name: Get Disk usage (Linux)
+          shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
+          register: linux_disk
+
+    # ==========================
+    # Windows Resource Collection
+    # ==========================
+    - name: Get CPU, Memory, and Disk usage (Windows)
+      when: os_family == "Windows"
+      block:
+        - name: Get CPU usage (Windows)
+          win_shell: |
+            $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | Select-Object -ExpandProperty CounterSamples
+            [math]::Round($cpu.CookedValue, 2)
+          register: win_cpu
+
+        - name: Get Memory usage (Windows)
+          win_shell: |
+            $mem = Get-WmiObject Win32_OperatingSystem
+            [math]::Round((($mem.TotalVisibleMemorySize - $mem.FreePhysicalMemory) / $mem.TotalVisibleMemorySize) * 100, 2)
+          register: win_mem
+
+        - name: Get Disk usage (Windows)
+          win_shell: |
+            $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
+            [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
+          register: win_disk
+
+    # ================================
+    # REFINED: Set Final Values (Unified)
+    # ================================
+    - name: Set final resource values based on OS
+      set_fact:
+        cpu:  "{{ (os_family == 'RedHat') | ternary(linux_cpu.stdout, win_cpu.stdout) }}"
+        ram:  "{{ (os_family == 'RedHat') | ternary(linux_mem.stdout, win_mem.stdout) }}"
+        disk: "{{ (os_family == 'RedHat') | ternary(linux_disk.stdout, win_disk.stdout) }}"
+
+    # ================================
+    # CORRECTED: Health Check + Logging
+    # ================================
+    - name: Determine health status
+      set_fact:
+        status: "{{ 'CRITICAL' if cpu | float > 60 or ram | float > 60 or disk | float > 60 else 'GOOD' }}"
+
+    - name: Append result to local log file on AWX control node
+      delegate_to: localhost
+      lineinfile:
+        path: /var/log/awx_node_health_check.log
+        create: yes
+        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu | float | round(2) }}% | RAM: {{ ram | float | round(2) }}% | Disk: {{ disk | float | round(2) }}% | STATUS: {{ status }}"
