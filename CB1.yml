@@ -54,34 +54,30 @@
       register: win_disk
 
     # ================================
-    # Normalize and convert to float
+    # Set Final Values (Per OS Block)
     # ================================
 
-    - name: Set final values (force float conversion)
+    - name: Set final values (Linux)
+      when: os_family == "RedHat"
       set_fact:
-        cpu: >-
-          {{
-            (os_family == 'Windows')
-            | ternary((win_cpu.stdout | float), (linux_cpu.stdout | float))
-          }}
-        ram: >-
-          {{
-            (os_family == 'Windows')
-            | ternary((win_mem.stdout | float), (linux_mem.stdout | float))
-          }}
-        disk: >-
-          {{
-            (os_family == 'Windows')
-            | ternary((win_disk.stdout | float), (linux_disk.stdout | float))
-          }}
+        cpu: "{{ linux_cpu.stdout | float }}"
+        ram: "{{ linux_mem.stdout | float }}"
+        disk: "{{ linux_disk.stdout | float }}"
+
+    - name: Set final values (Windows)
+      when: os_family == "Windows"
+      set_fact:
+        cpu: "{{ win_cpu.stdout | float }}"
+        ram: "{{ win_mem.stdout | float }}"
+        disk: "{{ win_disk.stdout | float }}"
+
+    # ================================
+    # Health Check + Logging
+    # ================================
 
     - name: Determine health status
       set_fact:
         status: "{{ 'CRITICAL' if cpu > 60 or ram > 60 or disk > 60 else 'GOOD' }}"
-
-    # ====================================
-    # Log to AWX control node (via delegate)
-    # ====================================
 
     - name: Append result to local log file on AWX control node
       delegate_to: localhost
