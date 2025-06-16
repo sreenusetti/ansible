@@ -47,34 +47,37 @@
       register: win_disk
 
     # --- Combine all results safely ---
-    - name: Set final values (safe with defaults)
+    - name: Set final values (with float conversion and fallback)
       set_fact:
         cpu: >-
           {{
             (os_family == 'Windows')
-            | ternary((win_cpu.stdout | default('0')) | float, (linux_cpu.stdout | default('0')) | float)
+            | ternary(win_cpu.stdout | default('0'), linux_cpu.stdout | default('0'))
           }}
         ram: >-
           {{
             (os_family == 'Windows')
-            | ternary((win_mem.stdout | default('0')) | float, (linux_mem.stdout | default('0')) | float)
+            | ternary(win_mem.stdout | default('0'), linux_mem.stdout | default('0'))
           }}
         disk: >-
           {{
             (os_family == 'Windows')
-            | ternary((win_disk.stdout | default('0')) | float, (linux_disk.stdout | default('0')) | float)
+            | ternary(win_disk.stdout | default('0'), linux_disk.stdout | default('0'))
           }}
 
-    - name: Determine health status
+    - name: Determine health status (safe casting before compare)
       set_fact:
         status: >-
-          {{ 'CRITICAL' if cpu > 60 or ram > 60 or disk > 60 else 'GOOD' }}
+          {{
+            'CRITICAL'
+            if (cpu | float) > 60 or (ram | float) > 60 or (disk | float) > 60
+            else 'GOOD'
+          }}
 
-    # --- Log the result to control node (AWX) ---
     - name: Append result to local log file on AWX control node
       delegate_to: localhost
       run_once: false
       lineinfile:
         path: /var/log/awx_node_health_check.log
         create: yes
-        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu }}% | RAM: {{ ram }}% | Disk: {{ disk }}% | STATUS: {{ status }}"
+        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu | float }}% | RAM: {{ ram | float }}% | Disk: {{ disk | float }}% | STATUS: {{ status }}"
