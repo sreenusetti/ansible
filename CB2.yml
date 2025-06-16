@@ -1,73 +1,87 @@
+---
 - name: Health Check for Linux and Windows Nodes
   hosts: all
   gather_facts: true
 
+  # We only need to become root for one specific task on localhost,
+  # so we don't set it at the play level.
+
   tasks:
-    - name: Detect OS Family
+    - name: Set OS family fact for easier conditioning
       set_fact:
         os_family: "{{ ansible_facts['os_family'] }}"
 
     # =========================
-    # Linux Resource Collection
+    # Resource Collection Block
     # =========================
-    - name: Get CPU, Memory, and Disk usage (Linux)
-      when: os_family == "RedHat"
+    - name: Collect resource metrics based on OS
       block:
-        - name: Get CPU usage (Linux)
-          shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
-          register: linux_cpu
+        # --- Linux Collection ---
+        - when: os_family == "RedHat"
+          block:
+            - name: Get CPU usage (Linux)
+              shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
+              register: linux_cpu
+              changed_when: false # This command doesn't change state
 
-        - name: Get Memory usage (Linux)
-          shell: free | awk '/Mem:/ {print ($3/$2) * 100}'
-          register: linux_mem
+            - name: Get Memory usage (Linux)
+              shell: free | awk '/Mem:/ {print ($3/$2) * 100}'
+              register: linux_mem
+              changed_when: false
 
-        - name: Get Disk usage (Linux)
-          shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
-          register: linux_disk
+            - name: Get Disk usage (Linux)
+              shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
+              register: linux_disk
+              changed_when: false
 
-    # ==========================
-    # Windows Resource Collection
-    # ==========================
-    - name: Get CPU, Memory, and Disk usage (Windows)
-      when: os_family == "Windows"
-      block:
-        - name: Get CPU usage (Windows)
-          win_shell: |
-            $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | Select-Object -ExpandProperty CounterSamples
-            [math]::Round($cpu.CookedValue, 2)
-          register: win_cpu
+        # --- Windows Collection ---
+        - when: os_family == "Windows"
+          block:
+            - name: Get CPU usage (Windows)
+              win_shell: |
+                $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | Select-Object -ExpandProperty CounterSamples
+                [math]::Round($cpu.CookedValue, 2)
+              register: win_cpu
+              changed_when: false
 
-        - name: Get Memory usage (Windows)
-          win_shell: |
-            $mem = Get-WmiObject Win32_OperatingSystem
-            [math]::Round((($mem.TotalVisibleMemorySize - $mem.FreePhysicalMemory) / $mem.TotalVisibleMemorySize) * 100, 2)
-          register: win_mem
+            - name: Get Memory usage (Windows)
+              win_shell: |
+                $mem = Get-WmiObject Win32_OperatingSystem
+                [math]::Round((($mem.TotalVisibleMemorySize - $mem.FreePhysicalMemory) / $mem.TotalVisibleMemorySize) * 100, 2)
+              register: win_mem
+              changed_when: false
 
-        - name: Get Disk usage (Windows)
-          win_shell: |
-            $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
-            [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
-          register: win_disk
+            - name: Get Disk usage (Windows)
+              win_shell: |
+                $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
+                [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
+              register: win_disk
+              changed_when: false
 
     # ================================
-    # REFINED: Set Final Values (Unified)
+    # Set and Process Final Values
     # ================================
-    - name: Set final resource values based on OS
+    - name: Unify resource values from OS-specific variables
       set_fact:
         cpu:  "{{ (os_family == 'RedHat') | ternary(linux_cpu.stdout, win_cpu.stdout) }}"
         ram:  "{{ (os_family == 'RedHat') | ternary(linux_mem.stdout, win_mem.stdout) }}"
         disk: "{{ (os_family == 'RedHat') | ternary(linux_disk.stdout, win_disk.stdout) }}"
 
-    # ================================
-    # CORRECTED: Health Check + Logging
-    # ================================
     - name: Determine health status
       set_fact:
+        # Cast to float at the moment of comparison to avoid type errors
         status: "{{ 'CRITICAL' if cpu | float > 60 or ram | float > 60 or disk | float > 60 else 'GOOD' }}"
 
-    - name: Append result to local log file on AWX control node
+    # ================================
+    # Logging Task (Corrected)
+    # ================================
+    - name: Append result to local log file on the control node
       delegate_to: localhost
+      become: true  # Use sudo to write to /var/log
       lineinfile:
         path: /var/log/awx_node_health_check.log
         create: yes
+        owner: awx  # Set owner/group to the AWX user for good practice
+        group: awx
+        mode: '0644' # Standard file permissions
         line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu | float | round(2) }}% | RAM: {{ ram | float | round(2) }}% | Disk: {{ disk | float | round(2) }}% | STATUS: {{ status }}"
