@@ -1,0 +1,65 @@
+---
+- name: Health Check for Linux and Windows Nodes
+  hosts: all
+  gather_facts: true
+  vars:
+    result_lines: []
+
+  tasks:
+    - name: Detect OS Family
+      set_fact:
+        os_family: "{{ ansible_facts['os_family'] }}"
+
+    - name: Get CPU usage (Linux)
+      when: os_family == "RedHat"
+      shell: top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}'
+      register: linux_cpu
+
+    - name: Get Memory usage (Linux)
+      when: os_family == "RedHat"
+      shell: free | awk '/Mem:/ {print ($3/$2) * 100}'
+      register: linux_mem
+
+    - name: Get Disk usage (Linux)
+      when: os_family == "RedHat"
+      shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
+      register: linux_disk
+
+    - name: Get CPU usage (Windows)
+      when: os_family == "Windows"
+      win_shell: |
+        $cpu = Get-Counter '\Processor(_Total)\% Processor Time' | Select-Object -ExpandProperty CounterSamples
+        [math]::Round($cpu.CookedValue, 2)
+      register: win_cpu
+
+    - name: Get Memory usage (Windows)
+      when: os_family == "Windows"
+      win_shell: |
+        $mem = Get-WmiObject Win32_OperatingSystem
+        [math]::Round((($mem.TotalVisibleMemorySize - $mem.FreePhysicalMemory) / $mem.TotalVisibleMemorySize) * 100, 2)
+      register: win_mem
+
+    - name: Get Disk usage (Windows)
+      when: os_family == "Windows"
+      win_shell: |
+        $disk = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
+        [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
+      register: win_disk
+
+    - name: Set final values
+      set_fact:
+        cpu: "{{ (os_family == 'Windows') | ternary(win_cpu.stdout, linux_cpu.stdout) | float }}"
+        ram: "{{ (os_family == 'Windows') | ternary(win_mem.stdout, linux_mem.stdout) | float }}"
+        disk: "{{ (os_family == 'Windows') | ternary(win_disk.stdout, linux_disk.stdout) | float }}"
+
+    - name: Determine health status
+      set_fact:
+        status: >-
+          {{ 'CRITICAL' if cpu > 60 or ram > 60 or disk > 60 else 'GOOD' }}
+
+    - name: Append result to local log file
+      local_action:
+        module: lineinfile
+        path: /var/log/awx_node_health_check.log
+        create: yes
+        line: "{{ inventory_hostname }} | OS: {{ os_family }} | CPU: {{ cpu }}% | RAM: {{ ram }}% | Disk: {{ disk }}% | STATUS: {{ status }}"
